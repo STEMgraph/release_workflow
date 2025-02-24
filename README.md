@@ -23,7 +23,7 @@ on:
 
 jobs:
   call-build-release:
-    uses: STEMgraph/release_workflow/.github/workflows/build-release-files.yml@main
+    uses: STEMgraph/release_workflow/.github/workflows/build-release-files.yml@<TAG>
     secrets: inherit
 ```
 
