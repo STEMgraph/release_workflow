@@ -1,0 +1,179 @@
+name: Build Release-Files from STEMgraph Challenge
+
+on:
+  workflow_call:
+
+
+
+# Enable pushing
+permissions:
+  contents: write
+
+jobs:
+  build-release-files:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v3
+
+      - name: Checkout document-generator repository
+        uses: actions/checkout@v3
+        with:
+          repository: STEMgraph/document-generator
+          path: document_generator
+          ref: v1.0.0
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Run Python Scripts to Generate Artifacts
+        run: |
+          python3 document_generator/parse_to_html.py challenge.stemgraph index.html
+          python3 document_generator/parse_to_md.py challenge.stemgraph README.md
+          python3 document_generator/parse_to_latex.py challenge.stemgraph challenge.tex
+
+      - name: Upload Generated Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-files
+          path: |
+            index.html
+            README.md
+            challenge.tex
+
+  release-md:
+    name: Release Markdown as README.md
+    needs: build-release-files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Download Markdown Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: generated-files
+          path: .
+
+      - name: Rename and Commit Markdown as README.md
+        run: |
+          if [ -f README.md ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add README.md
+            git commit -m "Update README.md from challenge.md" || echo "No changes to commit."
+            git push origin HEAD:master
+          else
+            echo "README.md not found!"
+            exit 1
+          fi
+
+  release-latex:
+    name: Release LaTeX PDF and Create Release
+    needs: build-release-files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository with Submodules
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Download LaTeX Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: generated-files
+          path: .
+
+      - name: Install Dependencies for SVG Conversion
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y librsvg2-bin
+
+      - name: Convert all assets/SVG images to PNG with 300 DPI
+        run: |
+          find assets -type f -name "*.svg" -exec sh -c 'for f; do rsvg-convert -d 300 -p 300 "$f" -o "${f%.svg}.png"; done' sh {} +
+
+      - name: Update .tex file to use PNG images
+        run: |
+          sed -i 's/\.svg/\.png/g' challenge.tex
+
+      - name: Prepare Filename
+        run: |
+          REPO_NAME="${GITHUB_REPOSITORY##*/}"
+          echo "REPO_TEX_NAME=${REPO_NAME}.tex" >> $GITHUB_ENV
+          echo "REPO_PDF_NAME=${REPO_NAME}.pdf" >> $GITHUB_ENV
+
+      - name: Rename LaTeX Source File
+        run: |
+          if [ -f challenge.tex ]; then
+            mv challenge.tex ${{ env.REPO_TEX_NAME }}
+          else
+            echo "challenge.tex not found!"
+            exit 1
+          fi
+
+      - name: Compile LaTeX Document
+        uses: xu-cheng/latex-action@v2
+        with:
+          root_file: ${{ env.REPO_TEX_NAME }}
+          compiler: lualatex
+          args: -file-line-error -halt-on-error -interaction=nonstopmode
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: false
+
+      - name: Upload PDF as Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./${{ env.REPO_PDF_NAME }}
+          asset_name: ${{ env.REPO_PDF_NAME }}
+          asset_content_type: application/pdf
+
+  release-html:
+    name: Release HTML to master
+    needs: build-release-files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Download HTML Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: generated-files
+          path: .
+
+      - name: Prepare master branch and Push HTML
+        run: |
+          if [ -f index.html ]; then
+            git add index.html
+          else
+            echo "challenge.html not found!"
+            exit 1
+          fi
+
+          git clean -fd
+          git checkout master
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "Update master index.html" || echo "No changes to commit."
+          git pull --rebase origin master
+          git push origin master
